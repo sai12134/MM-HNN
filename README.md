@@ -8,14 +8,13 @@ torch                     2.3.1
 torch-geometric           2.5.3
 torch-scatter             2.1.2
 rdkit                     2024.03.3
+deepchem                  2.6.0
 ogb                       1.3.6
 numpy                     1.25.2
 pandas                    2.2.2
 scipy                     1.13.1
 scikit-learn              1.6.1
 tqdm                      4.66.4
-networkx                  3.2.1
-seaborn                   0.13.2
 ```
 
 ## 📌 Datasets
