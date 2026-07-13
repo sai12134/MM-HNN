@@ -9,11 +9,10 @@ from datasets.utils import smi2hgraph, HData, edge_order
 
 class HGraph(InMemoryDataset):
     def __init__(self, root, partition='train', transform=None, pre_transform=None, pre_filter=None,
-                 delocalization=None, task=None):
+                 delocalization=None):
         assert partition in ['train', 'valid', 'test']
         self.partition = partition
         self.delocalization = delocalization
-        self.task = task
 
         super().__init__(root, transform, pre_transform, pre_filter)
 
@@ -42,14 +41,8 @@ class HGraph(InMemoryDataset):
         return ['train.pt', 'valid.pt', 'test.pt']
 
     def compute_hgraph_data(self, df):
-        if self.task is None:
-            smiles = df['smiles'].values.tolist()
-            target = df.iloc[:, 1:].values
-        else:
-            df = df.dropna(subset=[df.columns[self.task]])
-            smiles = df['smiles'].values.tolist()
-            target = df.iloc[:, [self.task]].values
-        target = torch.tensor(target, dtype=torch.float)
+        smiles = df['smiles'].values.tolist()
+        target = torch.tensor(df.iloc[:, 1:].values, dtype=torch.float)
 
         data_list = []
         # 遍历字符串列表

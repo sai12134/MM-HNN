@@ -34,5 +34,5 @@ All the original datasets can be obtained from https://moleculenet.org/datasets-
 ## 🔥 Model Training
 You can train the model by
 ```
-bash scripts/train_[dataset_name].sh
+python train.py --dataset [dataset_name] --delocalization
 ```

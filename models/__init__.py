@@ -1,1 +1,1 @@
-from models.mhnn import MHNN, MHNNS, MHNNM
+from models.mmhnn import MMHNN, MHNN

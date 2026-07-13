@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch_geometric.transforms as T
 from torch_geometric.loader import DataLoader
 
-from models import MHNN, MHNNS
+from models import MMHNN, MHNN
 from datasets import HGraph, OneTarget
 from utils import Logger, seed_everything
 from split import random_split, scaffold_split
@@ -21,7 +21,6 @@ import shutil
 def evaluate_reg(args, model, loader, std=None):
     model.eval()
     err_squared_sum = 0.0
-    # for RMSE
     for batch in loader:
         batch = batch.to(args.device)
         out = model(batch)
@@ -37,7 +36,7 @@ def evaluate_reg(args, model, loader, std=None):
 
 
 @torch.no_grad()
-def evaluate_cls(args, model, loader):
+def evaluate_cls(args, model, loader, num_tasks):
     model.eval()
     all_scores = []
     all_labels = []
@@ -45,17 +44,28 @@ def evaluate_cls(args, model, loader):
     with torch.no_grad():
         for batch in loader:
             batch = batch.to(device)
-            scores = model(batch).cpu().numpy()
-            labels = batch.y.cpu().numpy()
+            scores = model(batch).cpu().numpy()  # [batch, num_tasks]
+            labels = batch.y.cpu().numpy()       # [batch, num_tasks]
             all_scores.append(scores)
             all_labels.append(labels)
 
-    all_scores = np.concatenate(all_scores)
-    all_labels = np.concatenate(all_labels)
+    all_scores = np.concatenate(all_scores)  # [N, num_tasks]
+    all_labels = np.concatenate(all_labels)  # [N, num_tasks]
 
-    fpr, tpr, thresholds = roc_curve(all_labels, all_scores)
-    roc_auc = trapezoid(tpr, fpr)
-    return roc_auc
+    if num_tasks == 1:
+        fpr, tpr, thresholds = roc_curve(all_labels, all_scores)
+        roc_auc = trapezoid(tpr, fpr)
+        return roc_auc
+    else:
+        per_task_auc = []
+        for t in range(num_tasks):
+            valid = ~np.isnan(all_labels[:, t])
+            if valid.sum() > 0:
+                fpr, tpr, _ = roc_curve(all_labels[valid, t], all_scores[valid, t])
+                per_task_auc.append(trapezoid(tpr, fpr))
+
+        mean_auc = np.mean(per_task_auc)
+        return mean_auc, per_task_auc
 
 
 if __name__ == '__main__':
@@ -66,40 +76,40 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='Training')
 
-    # 数据集参数
-    parser.add_argument('--data_dir', type=str, required=True)
-    parser.add_argument('--dataset', type=str, help='[esol, freesolv,lipophilicity, hiv, bace, bbbp]')
+    # dataset hyperparameters
+    parser.add_argument('--data_dir', type=str, default='datasets')
+    parser.add_argument('--dataset', type=str, default='esol', help='[esol, freesolv, lipophilicity, hiv, bace, bbbp, tox21]')
+    parser.add_argument('--num_tasks', type=int, default=1, help='number of tasks')
 
-    # 训练超参数
+    # training hyperparameters
     parser.add_argument('--delocalization', action='store_true', help='includes the delocalization hyperedges')
-    parser.add_argument('--runs', default=100, type=int)
-    parser.add_argument('--seed', default=42, type=int)
+    parser.add_argument('--runs', type=int, default=3)
+    parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--device', type=int, default=0)
-    parser.add_argument('--epochs', default=300, type=int)
+    parser.add_argument('--epochs', type=int, default=300)
     parser.add_argument('--batch_size', type=int, default=32)
-    parser.add_argument('--lr', default=0.0001, type=float)
-    parser.add_argument('--min_lr', default=0.0001, type=float)
-    parser.add_argument('--wd', default=0.0, type=float)
-    parser.add_argument('--clip_gnorm', default=None, type=float)
+    parser.add_argument('--lr', type=float, default=0.0003)
+    parser.add_argument('--min_lr', type=float, default=0.0001)
+    parser.add_argument('--wd', type=float, default=0.0005)
+    parser.add_argument('--clip_gnorm', type=float, default=None)
     parser.add_argument('--log_steps', type=int, default=1)
 
-    # 模型超参数
-    parser.add_argument('--method', default='mhnn', help='model type')
+    # model hyperparameters
+    parser.add_argument('--method', default='mmhnn', help='model type')
     parser.add_argument('--All_num_layers', default=3, type=int, help='number of basic blocks')
-    parser.add_argument('--MLP1_num_layers', default=2, type=int, help='layer number of mlps')
+    parser.add_argument('--MLP1_num_layers', default=2, type=int, help='layer number of mlp1')
     parser.add_argument('--MLP2_num_layers', default=2, type=int, help='layer number of mlp2')
     parser.add_argument('--MLP3_num_layers', default=2, type=int, help='layer number of mlp3')
     parser.add_argument('--MLP4_num_layers', default=2, type=int, help='layer number of mlp4')
-    parser.add_argument('--MLP_hidden', default=64, type=int, help='hidden dimension of mlps')
+    parser.add_argument('--MLP_hidden', default=128, type=int, help='hidden dimension of mlps')
     parser.add_argument('--output_num_layers', default=2, type=int)
-    parser.add_argument('--output_hidden', default=64, type=int)
+    parser.add_argument('--output_hidden', default=128, type=int)
     parser.add_argument('--aggregate', default='mean', choices=['sum', 'mean'])
     parser.add_argument('--normalization', default='ln', choices=['bn', 'ln', 'None'])
-    parser.add_argument('--activation', default='relu', choices=['Id', 'relu', 'prelu'])
-    parser.add_argument('--dropout', default=0.0, type=float)
+    parser.add_argument('--activation', default='prelu', choices=['Id', 'relu', 'prelu'])
+    parser.add_argument('--dropout', default=0.05, type=float)
 
     args = parser.parse_args()
-    print(args)
 
     device = f'cuda:{args.device}' if torch.cuda.is_available() else 'cpu'
     device = torch.device(device)
@@ -108,6 +118,12 @@ if __name__ == '__main__':
         task_type = 'reg'
     else:
         task_type = 'cls'
+        args.lr = 0.00013
+
+    if args.dataset == 'tox21':
+        args.num_tasks = 12
+
+    print(args)
 
     file_path = f'datasets/raw/{args.dataset}.csv'
     if args.dataset in ['hiv', 'bace', 'bbbp']:
@@ -123,7 +139,10 @@ if __name__ == '__main__':
 
     os.makedirs(processed_dir, exist_ok=True)
 
-    transform = T.Compose([OneTarget()])
+    if args.num_tasks == 1:
+        transform = T.Compose([OneTarget()])
+    else:
+        transform = None
 
     train_dataset = HGraph(root=args.data_dir, partition='train', transform=transform,
                            delocalization=args.delocalization)
@@ -145,16 +164,19 @@ if __name__ == '__main__':
     valid_loader = DataLoader(valid_dataset, batch_size=args.batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
 
-    # 初始化一个日志记录器，用于记录多次运行的实验结果
+    # initialize a logger to record the results of multiple experimental runs
     logger = Logger(args.runs, args)
 
     for run in range(args.runs):
-        seed = args.seed
+        seed = args.seed + run
         seed_everything(seed=seed, workers=True)
         print(f'\nRun No. {run+1}:')
         print(f'Seed: {seed}\n')
 
-        model = MHNNS(1, args, task_type)
+        if args.method == 'mmhnn':
+            model = MMHNN(args.num_tasks, args, task_type)
+        else:
+            model = MHNN(args.num_tasks, args, task_type)
         model = model.to(device)
         print("# Params:", sum(p.numel() for p in model.parameters() if p.requires_grad))
 
@@ -204,6 +226,7 @@ if __name__ == '__main__':
                           f'Valid RMSE: {valid_RMSE:.6f}, '
                           f'Test RMSE: {test_RMSE:.6f}')
         else:
+            is_multilabel = (args.num_tasks > 1)
             for epoch in range(1, 1 + args.epochs):
                 model.train()
                 loss_all = 0.0
@@ -212,7 +235,15 @@ if __name__ == '__main__':
                     data = data.to(args.device)
                     optimizer.zero_grad()
                     out = model(data)
-                    loss = loss_fn(out, data.y.view(-1).float())
+                    y = data.y.view(-1).float()
+                    out_f = out.view(-1)
+                    if is_multilabel:
+                        # Mask NaN labels for multi-task loss
+                        nan_mask = ~torch.isnan(y)
+                        y = torch.nan_to_num(y, nan=0.0)
+                        loss = (loss_fn(out_f, y) * nan_mask.float()).sum() / nan_mask.sum()
+                    else:
+                        loss = loss_fn(out_f, y)
                     loss.backward()
                     loss_all += loss.item() * data.num_graphs
                     if args.clip_gnorm is not None:
@@ -220,10 +251,16 @@ if __name__ == '__main__':
                     optimizer.step()
 
                 loss_all /= len(train_loader.dataset)
-                valid_AUC = evaluate_cls(args, model, valid_loader)
+                if is_multilabel:
+                    valid_AUC, valid_per_task = evaluate_cls(args, model, valid_loader, args.num_tasks)
+                else:
+                    valid_AUC = evaluate_cls(args, model, valid_loader, args.num_tasks)
                 scheduler.step(valid_AUC)
                 if best_val_AUC is None or valid_AUC > best_val_AUC:
-                    test_AUC = evaluate_cls(args, model, test_loader)
+                    if is_multilabel:
+                        test_AUC, _ = evaluate_cls(args, model, test_loader, args.num_tasks)
+                    else:
+                        test_AUC = evaluate_cls(args, model, test_loader, args.num_tasks)
                     best_val_AUC = valid_AUC
                 logger.add_result(run, [loss_all, valid_AUC, test_AUC])
 
@@ -237,6 +274,25 @@ if __name__ == '__main__':
 
         logger.print_statistics(run=run, task_type=task_type)
     logger.print_statistics(run=None, task_type=task_type)
+
+    all_results = torch.tensor(logger.results)
+    test_results = []
+    if task_type == 'reg':
+        for r in all_results:
+            best_epoch = r[:, 1].argmin().item()
+            test_results.append(round(r[best_epoch, 2].item(), 6))
+        print(f'\nIndividual Test RMSE values ({len(test_results)} runs):')
+    elif args.num_tasks > 1:
+        for r in all_results:
+            best_epoch = r[:, 1].argmax().item()
+            test_results.append(round(r[best_epoch, 2].item(), 6))
+        print(f'\nIndividual Test Mean AUC values ({len(test_results)} runs):')
+    else:
+        for r in all_results:
+            best_epoch = r[:, 1].argmax().item()
+            test_results.append(round(r[best_epoch, 2].item(), 6))
+        print(f'\nIndividual Test AUC values ({len(test_results)} runs):')
+    print(test_results)
 
 print('Task end time:')
 print(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
